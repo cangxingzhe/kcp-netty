@@ -51,11 +51,17 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
 
     private final DefaultUkcpServerChannelConfig config;
 
+    /**
+     * 客户端链接
+     */
     private final ReItrHashMap<SocketAddress, UkcpServerChildChannel> childChannelMap = new ReItrHashMap<>();
 
     private final ReusableIterator<Map.Entry<SocketAddress, UkcpServerChildChannel>> childChannelMapItr =
             childChannelMap.entrySet().iterator();
 
+    /**
+     * 待关闭的 socket 映射
+     */
     private final ReItrHashMap<SocketAddress, CloseWaitKcp> closeWaitKcpMap = new ReItrHashMap<>();
 
     private final ReusableIterator<Map.Entry<SocketAddress, CloseWaitKcp>> closeWaitKcpMapItr =
@@ -73,6 +79,9 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
 
     private List<Object> closeChildList = new ArrayList<>();
 
+    /**
+     * 关闭定时器
+     */
     private Runnable closeWaitRunner = new CloseWaitRun();
 
     private static DatagramChannel newSocket(SelectorProvider provider) {
@@ -293,7 +302,11 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
         throw new UnsupportedOperationException();
     }
 
+    /**
+     * 创建子 Channel
+     */
     private UkcpServerChildChannel getOrCreateUkcpChannel(InetSocketAddress remoteAddress) {
+        // 从缓存获取
         UkcpServerChildChannel ch = childChannelMap.get(remoteAddress);
         if (ch == null) {
             ch = createChildChannel(remoteAddress);
@@ -302,7 +315,15 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
         return ch;
     }
 
+    /**
+     * 1.创建 UkcpServerChildChannel，内部采用 Ukcp 和 Output
+     * 2.触发事件
+     * 3.设置调度器下次运行事件
+     * @param remoteAddress
+     * @return
+     */
     private UkcpServerChildChannel createChildChannel(InetSocketAddress remoteAddress) {
+        //
         Ukcp ukcp = new Ukcp(0, output); // temp conv, need to set conv in outter
         UkcpServerChildChannel ch = new UkcpServerChildChannel(this, ukcp, remoteAddress);
 
@@ -472,6 +493,10 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
         }
     }
 
+    /**
+     * 更新子 Channel 状态，表明它可以 flush
+     * @param childCh
+     */
     void updateChildKcp(UkcpServerChildChannel childCh) {
         int current = Utils.milliSeconds();
         Throwable exception = null;
@@ -584,6 +609,7 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
 
                         UkcpChannelConfig childConfig = childCh.config();
                         ChannelPipeline childPipeline = childCh.pipeline();
+                        // TODO 作用
                         boolean mergeSegmentBuf = childConfig.isMergeSegmentBuf();
                         CodecOutputList<ByteBuf> recvBufList = null;
                         boolean recv = false;

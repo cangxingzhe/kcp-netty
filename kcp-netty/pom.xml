@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.jpower.kcp</groupId>
         <artifactId>kcp-parent</artifactId>
-        <version>1.5.0</version>
+        <version>1.4.13</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
 
@@ -22,10 +22,16 @@
             <artifactId>netty-transport</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- test -->
         <dependency>
-            <groupId>junit</groupId>
-            <artifactId>junit</artifactId>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

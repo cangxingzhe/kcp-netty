@@ -13,6 +13,12 @@ import io.netty.util.internal.ObjectPool;
 import io.netty.util.internal.ObjectPool.Handle;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.Setter;
+
+import static io.jpower.kcp.netty.InputStateEnum.MISMATCH_CMD;
+import static io.jpower.kcp.netty.InputStateEnum.NORMAL;
 
 /**
  * Java implementation of <a href="https://github.com/skywind3000/kcp">KCP</a>
@@ -39,21 +45,25 @@ public class Kcp {
 
     /**
      * cmd: push data
+     * 数据包
      */
     public static final byte IKCP_CMD_PUSH = 81;
 
     /**
      * cmd: ack
+     * 确认命令
      */
     public static final byte IKCP_CMD_ACK = 82;
 
     /**
      * cmd: window probe (ask)
+     * 询问远端窗口大小
      */
     public static final byte IKCP_CMD_WASK = 83;
 
     /**
      * cmd: window size (tell)
+     * 告诉远端自己的窗口大小
      */
     public static final byte IKCP_CMD_WINS = 84;
 
@@ -111,17 +121,31 @@ public class Kcp {
 
     private int state;
 
+    /**
+     * 当前未收到确认回传的 发送出去的包的 最小编号。也就是此编号前的包都已经收到确认回传了。
+     */
     private long sndUna;
 
+    /**
+     * 一个要发送出去的包编号
+     */
     private long sndNxt;
 
+    /**
+     * 下一个要接收的数据包的编号。也就是说此序号之前的包都已经按顺序全部收到了
+     * ，下面期望收到这个序号的包（已保证数据包的连续性、顺序性）
+     */
     private long rcvNxt;
 
     private int tsRecent;
 
     private int tsLastack;
 
+    /**
+     * 慢启动阈值（Slow Start Threshold，ssthresh）
+     */
     private int ssthresh = IKCP_THRESH_INIT;
+
 
     private int rxRttvar;
 
@@ -131,18 +155,32 @@ public class Kcp {
 
     private int rxMinrto = IKCP_RTO_MIN;
 
+    /**
+     * 发送窗口大小
+     */
     private int sndWnd = IKCP_WND_SND;
 
+    /**
+     * 接收窗口的大小
+     */
     private int rcvWnd = IKCP_WND_RCV;
-
+    /**
+     * 远端的接收窗口大小
+     */
     private int rmtWnd = IKCP_WND_RCV;
 
     private int cwnd;
 
     private int probe;
 
+    /**
+     * 当前时间戳
+     */
     private int current;
 
+    /**
+     * 刷新间隔
+     */
     private int interval = IKCP_INTERVAL;
 
     private int tsFlush = IKCP_INTERVAL;
@@ -151,38 +189,89 @@ public class Kcp {
 
     private int maxSegXmit;
 
+    /**
+     * 开启快速重传模式，关闭流量控制
+     */
     private boolean nodelay;
 
+    /**
+     * 是否第一次 update
+     */
     private boolean updated;
-
+    /**
+     * 下次窗口探测时间
+     */
     private int tsProbe;
-
+    /**
+     * 探测时间间隔
+     */
     private int probeWait;
 
+    /**
+     * 被视为断开连接的再传输的最大数量
+     */
     private int deadLink = IKCP_DEADLINK;
 
+    /**
+     * 可能发送的数据的最大数量
+     */
     private int incr;
 
+    /**
+     * 待发送队列
+     * 应用层的数据（在调用KCP.Send后）会进入此队列中，KCP在flush的时候根据发送窗口的大小，
+     * 再决定将多少个Segment放入到snd_buf中进行发送
+     */
     private LinkedList<Segment> sndQueue = new LinkedList<>();
 
+    /**
+     * 接收队列
+     */
     private ReItrLinkedList<Segment> rcvQueue = new ReItrLinkedList<>();
 
+    /**
+     * 发送队列中包含两种类型的数据，已发送但是尚未被接收方确认的数据，没被发送过的数据。
+     * 没发送过的数据比较好处理，直接发送即可。重点在于已经发送了但是还没被接收方确认的数
+     * 据，该部分的策略直接决定着协议快速、高效与否。KCP主要使用两种策略来决定是否需要重
+     * 传KCP数据包，超时重传、快速重传、选择重传。
+     *
+     * 送缓存池。发送出去的数据将会呆在这个池子中，等待远端的回传确认，等收到远端确认此包
+     * 收到后再从snd_buf移出去。 KCP在每次flush的时候都会检查这个缓存池中的每个Segment，
+     * 如果超时或者判定丢包就会重发。
+     */
     private ReItrLinkedList<Segment> sndBuf = new ReItrLinkedList<>();
 
+    /**
+     * 接收到的数据会先存放到rcv_buf中。 因为数据可能是乱序到达本地的，
+     * 所以接受到的数据会按sn顺序依次放入到对应的位置中。 当sn从低到高
+     * 连续的数据包都收到了，则将这批连续的数据包转移到rcv_queue中。这
+     * 样就保证了数据包的顺序性。
+     */
     private ReItrLinkedList<Segment> rcvBuf = new ReItrLinkedList<>();
 
     private ReusableListIterator<Segment> rcvQueueItr = rcvQueue.listIterator();
 
+    /**
+     * 发送队列，待回复
+     */
     private ReusableListIterator<Segment> sndBufItr = sndBuf.listIterator();
 
     private ReusableListIterator<Segment> rcvBufItr = rcvBuf.listIterator();
 
+    /**
+     * 收到包后要发送的回传确认。 在收到包时先将要回传ack的sn放入此队列中，
+     * 在flush函数中再发出去。 acklist中，一个ack以(sn,timestampe)为一
+     * 组的方式存储。即 [{sn1,ts1},{sn2,ts2} … ] 即 [sn1,ts1,sn2,ts2 … ]
+     */
     private int[] acklist = new int[8];
 
     private int ackcount;
 
     private Object user;
 
+    /**
+     * 快速重启的阈值，大于0表示开启快速重传
+     */
     private int fastresend;
 
     private int fastlimit = IKCP_FASTACK_LIMIT;
@@ -243,31 +332,119 @@ public class Kcp {
         return buf.writerIndex() - offset;
     }
 
-    private static class Segment {
+    /**
+     * 协议结构
+     *     0                         4      5     6      8 (BYTE)
+     *
+     *     +-------------------+----+----+----+
+     *
+     *     |      conv      | cmd | frg |  wnd |
+     *
+     *     +-------------------+----+----+----+   8
+     *
+     *     |         ts         |             sn           |
+     *
+     *     +-------------------+----------------+  16
+     *
+     *     |       una       |             len          |
+     *
+     *     +-------------------+----------------+   24
+     *
+     *     |                                                   |
+     *
+     *     |            DATA (optional)          |
+     *
+     *     |                                                   |
+     *
+     *     +-------------------------------------+
+     *
+     *
+     *
+     * KCP中会有四种数据包类型，分别是
+     *
+     * 1.数据包（IKCP_CMD_PUSH）：发送数据给远端
+     * 2.ACK包（IKCP_CMD_ACK）：告诉远端自己收到了哪个编号的数据
+     * 3.窗口大小探测包（IKCP_CMD_WASK）：询问远端的数据接收窗口还剩余多少
+     * 4.窗口大小回应包（IKCP_CMD_WINS）：回应远端自己的数据接收窗口大小
+     *
+     */
+
+    @Getter(AccessLevel.PACKAGE)
+    @Setter(AccessLevel.PACKAGE)
+    static class Segment {
 
         private final Handle<Segment> recyclerHandle;
 
+        /**
+         * 2 byte unsign
+         * 连接号。UDP是无连接的，conv用于表示来自于哪个客户端。对连接的一种替代
+         */
         private int conv;
 
+        /**
+         * 命令字 1 byte
+         */
         private byte cmd;
 
+        /**
+         * 分片序号
+         * 分片，用户数据可能会被分成多个KCP包，发送出去
+         *
+         * frg是fragment的缩小，是一个Segment在一次Send的data中的倒序序号。
+         * 在让KCP发送数据时，KCP会加入snd_queue的Segment分配序号，标记
+         * Segment是这次发送数据中的倒数第几个Segment。 数据在发送出去时，由
+         * 于mss的限制，数据可能被分成若干个Segment发送出去。在分segment的过
+         * 程中，相应的序号就会被记录到frg中。 接收端在接收到这些segment时，就
+         * 会根据frg将若干个segment合并成一个，再返回给应用层。
+         */
         private short frg;
 
+        /**
+         * wnd是window的缩写； 滑动窗口大小，用于流控（Flow Control）
+         * 1.当Segment做为发送数据时，此wnd为本机滑动窗口大小，用于告诉远端自己窗口剩余多少
+         * 2.当Segment做为接收到数据时，此wnd为远端滑动窗口大小，本机知道了远端窗口剩余多少
+         * 后，可以控制自己接下来发送数据的大小
+         */
         private int wnd;
 
+        /**
+         * 即timestamp , 当前Segment发送时的时间戳
+         */
         private int ts;
 
+        /**
+         * 即Sequence Number,Segment的编号
+         */
         private long sn;
 
+        /**
+         *
+         * una即unacknowledged,表示此编号前的所有包都已收到了。
+         */
         private long una;
 
+        // ---------------------- 流控
+
+        /**
+         * resend timestamp , 指定重发的时间戳，当当前时间超过这个时间时，则再重发一次这个包。
+         */
         private int resendts;
-
+        /**
+         * rto即Retransmission TimeOut，即超时重传时间，在发送出去时根据之前的网络情况进行设置
+         */
         private int rto;
-
+        /**
+         * 用于以数据驱动的快速重传机制
+         */
         private int fastack;
-
+        /**
+         * 基本类似于Segment发送的次数，每发送一次会自加一。用于统计该Segment被重传了几次，用于参考，进行调节
+         */
         private int xmit;
+
+
+
+
 
         private ByteBuf data;
 
@@ -350,6 +527,8 @@ public class Kcp {
 
     /**
      * user/upper level recv: returns size, returns below zero for EAGAIN
+     *
+     * 用户获取接收到数据(去除kcp头的用户数据)。该函数根据frg，把kcp包数据进行组合返回给用户。
      *
      * @param buf
      * @return
@@ -505,6 +684,31 @@ public class Kcp {
         return true;
     }
 
+    /**
+     * 发送数据到对端
+     *
+     * 把用户发送的数据根据MSS进行分片。用户发送1900字节的数据，MTU为1400byte。
+     * 因此该函数会把1900byte的用户数据分成两个包，一个数据大小为1400，头frg设置
+     * 为1，len设置为1400；第二个包，头frg设置为0，len设置为500。切好KCP包之后，
+     * 放入到名为snd_queue的待发送队列中
+     *
+     * 注：流模式情况下，kcp会把两次发送的数据衔接为一个完整的kcp包。非流模式下，用
+     * 户数据%MSS的包，也会作为一个包发送出去
+     *
+     * MTU，数据链路层规定的每一帧的最大长度，超过这个长度数据会被分片。通常MTU的长
+     * 度为1500字节，IP协议规定所有的路由器均应该能够转发(512数据+60IP首部+4预留=
+     * 576字节)的数据。MSS，最大输出大小(双方的约定)，KCP的大小为MTU-kcp头24字节。
+     * IP数据报越短，路由器转发越快，但是资源利用率越低。传输链路上的所有MTU都一至的
+     * 情况下效率最高，应该尽可能的避免数据传输的工程中，再次被分。UDP再次被分的后(
+     * 通常1分为2)，只要丢失其中的任意一份，两份都要重新传输。因此，合理的MTU应该是
+     * 保证数据不被再分的前提下，尽可能的大。
+     *
+     * 以太网的MTU通常为1500字节-IP头(20字节固定+40字节可选)-UDP头8个字节=1472字
+     * 节。KCP会考虑多传输协议，但是在UDP的情况下，设置为1472字节更为合理。
+     *
+     * 主要工作
+     * 1. 将数据包放入待发送队列
+     */
     public int send(ByteBuf buf) {
         assert mss > 0;
 
@@ -514,6 +718,9 @@ public class Kcp {
         }
 
         // append to previous segment in streaming mode (if possible)
+        // 流模式
+        // 注：流模式情况下，kcp会把两次发送的数据衔接为一个完整的kcp包。
+        // 非流模式下，用户数据%MSS的包，也会作为一个包发送出去。
         if (stream) {
             if (!sndQueue.isEmpty()) {
                 Segment last = sndQueue.peekLast();
@@ -521,7 +728,7 @@ public class Kcp {
                 int lastLen = lastData.readableBytes();
                 if (lastLen < mss) {
                     int capacity = mss - lastLen;
-                    int extend = len < capacity ? len : capacity;
+                    int extend = Math.min(len, capacity);
                     if (lastData.maxWritableBytes() < extend) { // extend
                         ByteBuf newBuf = byteBufAllocator.ioBuffer(lastLen + extend);
                         newBuf.writeBytes(lastData);
@@ -545,7 +752,7 @@ public class Kcp {
             count = (len + mss - 1) / mss;
         }
 
-        if (!stream && count > 255) { // Maybe don't need the conditon in stream mode
+        if (count >= IKCP_WND_RCV) { // Maybe don't need the condition in stream mode
             return -2;
         }
 
@@ -555,7 +762,7 @@ public class Kcp {
 
         // segment
         for (int i = 0; i < count; i++) {
-            int size = len > mss ? mss : len;
+            int size = Math.min(len, mss);
             Segment seg = Segment.createSegment(buf.readRetainedSlice(size));
             seg.frg = (short) (stream ? 0 : count - i - 1);
             sndQueue.add(seg);
@@ -565,6 +772,19 @@ public class Kcp {
         return 0;
     }
 
+    /**
+     * 标准方法（Jacobson / Karels 算法）
+     *
+     * 公式
+     * SRTT = (1 -  α) * SRTT +  α * RTT
+     * RTTVAR = (1 - β) * RTTVAR + β * (|RTT-SRTT|)
+     * RTO= µ * SRTT + ∂ * RTTVar
+     *
+     * 权重因子 α 的建议值是 0.125
+     * β 建议值 0.25
+     * μ 建议值取 1，∂ 建议值取 4
+     * 这种算法下 RTO 与 RTT 变化的差值关系更密切，能对变化剧烈的 RTT做出更及时的调整。
+     */
     private void updateAck(int rtt) {
         if (rxSrtt == 0) {
             rxSrtt = rtt;
@@ -584,6 +804,9 @@ public class Kcp {
         rxRto = ibound(rxMinrto, rto, IKCP_RTO_MAX);
     }
 
+    /**
+     * 更新 sndUna
+     */
     private void shrinkBuf() {
         if (sndBuf.size() > 0) {
             Segment seg = sndBuf.peek();
@@ -594,6 +817,7 @@ public class Kcp {
     }
 
     private void parseAck(long sn) {
+        // 产生重复确认的包，收到没发送过的序列号，概率极低，可能是conv没变重启程序导致的
         if (itimediff(sn, sndUna) < 0 || itimediff(sn, sndNxt) >= 0) {
             return;
         }
@@ -638,6 +862,13 @@ public class Kcp {
         }
     }
 
+    /**
+     * KCP会把收到的数据包的sn及ts放置在acklist中，两个相邻的节点为一组，
+     * 分别存储sn和ts。update时会读取acklist，并以IKCP_CMD_ACK的命令返
+     * 回确认包。
+     * @param sn
+     * @param ts
+     */
     private void ackPush(long sn, int ts) {
         int newSize = 2 * (ackcount + 1);
 
@@ -661,6 +892,7 @@ public class Kcp {
     private void parseData(Segment newSeg) {
         long sn = newSeg.sn;
 
+        // kcp数据包放置rcv_buf队列。丢弃接收窗口之外的和重复的包
         if (itimediff(sn, rcvNxt + rcvWnd) >= 0 || itimediff(sn, rcvNxt) < 0) {
             newSeg.recycle(true);
             return;
@@ -696,6 +928,7 @@ public class Kcp {
         }
 
         // move available data from rcv_buf -> rcv_queue
+        // 把rcv_buf中前面连续的数据全部移动至rcv_queue
         moveRcvData(); // Invoke the method only if the segment is not repeat?
     }
 
@@ -712,7 +945,20 @@ public class Kcp {
         }
     }
 
-    public int input(ByteBuf data) {
+    /**
+     * 接收对端数据
+     * KCP的接收过程是将UDP收到的数据进行解包，重新组装顺序的、可靠的数据后交付给用户。
+     *
+     * Part 1是解析包头、获取数据。 值得注意的是：
+     * Part 1.3中，通过分析收到的远端数据中的una，确认了本机发送的哪些包被远端接收到了，从而可以将本机缓存在snd_buf中的（已被远端接收到的）发送数据清除掉。
+     * 而Part 1.4中，则是通过分析远端单独回传的ack包，来确认本机哪个数据包被接收到，而从snd_buf中清除那个确认被接收到了的数据包。
+     * Part 1.5中，则是本机接收远端数据包的主要逻辑部分。 在有剩余接收窗口的情况下，
+     * 1.回传ack给远端，
+     * 2.摒弃重复收到的数据包
+     * 3.分析数据，放入rcv_buf中相对应的位置
+     * Part 2是根据收到包头的信息，更新网络情况的统计数据，方便进行流控，同样的也不在本文中展开。
+     */
+    public InputStateEnum input(ByteBuf data) {
         long oldSndUna = sndUna;
         long maxack = 0;
         boolean flag = false;
@@ -722,10 +968,11 @@ public class Kcp {
         }
 
         if (data == null || data.readableBytes() < IKCP_OVERHEAD) {
-            return -1;
+            return InputStateEnum.NO_ENOUGH_HEAD;
         }
-
+        // Part 1 逐步解析data中的数据
         while (true) {
+            //kcp包对前面的24个字节进行解压，包括conv、frg、cmd、wnd、ts、sn、una、len。
             int conv, len, wnd, ts;
             long sn, una;
             byte cmd;
@@ -738,9 +985,10 @@ public class Kcp {
 
             conv = data.readIntLE();
             if (conv != this.conv && !(this.conv == 0 && autoSetConv)) {
-                return -4;
+                return InputStateEnum.INCONSISTENCY_CONV;
             }
-
+            //** Part 1.1
+            //** 解析出数据中的KCP头部
             cmd = data.readByte();
             frg = data.readUnsignedByte();
             wnd = data.readUnsignedShortLE();
@@ -750,30 +998,44 @@ public class Kcp {
             len = data.readIntLE();
 
             if (data.readableBytes() < len || len < 0) {
-                return -2;
+                return InputStateEnum.NO_ENOUGH_DATA;
             }
 
             if (cmd != IKCP_CMD_PUSH && cmd != IKCP_CMD_ACK && cmd != IKCP_CMD_WASK && cmd != IKCP_CMD_WINS) {
-                return -3;
+                return MISMATCH_CMD;
             }
 
             if (this.conv == 0 && autoSetConv) { // automatically set conv
                 this.conv = conv;
             }
-
+            //** Part 1.2
+            //** 获得远端的窗口大小
             this.rmtWnd = wnd;
+            //** Part 1.3
+            //** 分析una，看哪些segment远端收到了，把远端收到的segment从snd_buf中移除
+            //会删除snd_buf中，所有una之前的kcp数据包，因为这些数据包接收者已经确认。根据wnd更新接收端接收窗口大小
             parseUna(una);
+            //** 因为snd_buf可能改变了，更新当前的snd_una
             shrinkBuf();
 
             boolean readed = false;
             int current = this.current;
             switch (cmd) {
+                //** Part 1.4
+                //** 如果收到的是远端发来的ACK包
+                // IKCP_CMD_ACK数据确认包
+                // 两个使命：1、RTO更新，2、确认发送包接收方已接收到。
                 case IKCP_CMD_ACK: {
                     int rtt = itimediff(current, ts);
                     if (rtt >= 0) {
+                        // 更新 RTO 因为此时收到远端的ack，所以我们知道远端的包到本机的时间，
+                        // 因此可统计当前的网速如何，进行调整
                         updateAck(rtt);
                     }
+                    //** 分析具体是哪个segment被收到了，将其从snd_buf中移除
+                    //** 同时给snd_buf中的其它segment的fastack字段增加计数++
                     parseAck(sn);
+                    //** 因为snd_buf可能改变了，更新当前的snd_una
                     shrinkBuf();
                     if (!flag) {
                         flag = true;
@@ -788,9 +1050,16 @@ public class Kcp {
                     }
                     break;
                 }
+                //** Part 1.5
+                //** 如果收到的是远端发来的数据包
+                // IKCP_CMD_PUSH数据发送命令
+                // 解包，放入 rcv_buff
                 case IKCP_CMD_PUSH: {
+                    //** 如果还有足够多的接收窗口
                     if (itimediff(sn, rcvNxt + rcvWnd) < 0) {
+                        //** push当前包的ack给远端（会在flush中发送ack出去)
                         ackPush(sn, ts);
+                        //** 如果当前segment还没被接收过sn >= rcv_next
                         if (itimediff(sn, rcvNxt) >= 0) {
                             if (len > 0) {
                                 seg = Segment.createSegment(data.readRetainedSlice(len));
@@ -805,7 +1074,9 @@ public class Kcp {
                             seg.ts = ts;
                             seg.sn = sn;
                             seg.una = una;
-
+                            //** 1. 如果已经接收过了，则丢弃
+                            //** 2. 否则将其按sn的顺序插入到rcv_buf中对应的位置中去
+                            //** 3. 按顺序将sn连续在一起的segment转移转移到rcv_queue中
                             parseData(seg);
                         }
                     }
@@ -814,9 +1085,13 @@ public class Kcp {
                     }
                     break;
                 }
+                //** Part 1.6
+                //** 如果收到的包是远端发过来询问窗口大小的包
+                // 告知发送 Window size 包大小
                 case IKCP_CMD_WASK: {
                     // ready to send back IKCP_CMD_WINS in ikcp_flush
                     // tell remote my window size
+                    //** 由于每个KCP包头都会包含窗口大小，所以此处其实只是个标记位而已，无须做其它事情
                     probe |= IKCP_ASK_TELL;
                     if (log.isDebugEnabled()) {
                         log.debug("{} input ask", this);
@@ -831,14 +1106,15 @@ public class Kcp {
                     break;
                 }
                 default:
-                    return -3;
+                    //** 不接受其它的命令
+                    return MISMATCH_CMD;
             }
 
             if (!readed) {
                 data.skipBytes(len);
             }
         }
-
+        //Part 2 , 根据收到包头的信息，更新网络情况的统计数据，方便进行流控
         if (flag) {
             parseFastack(maxack);
         }
@@ -865,9 +1141,12 @@ public class Kcp {
             }
         }
 
-        return 0;
+        return NORMAL;
     }
 
+    /**
+     * 可用接收窗口大小
+     */
     private int wndUnused() {
         if (rcvQueue.size() < rcvWnd) {
             return rcvWnd - rcvQueue.size();
@@ -876,6 +1155,10 @@ public class Kcp {
     }
 
     /**
+     * Part 1主要是发送ack包给远端，告诉远端自己收到了哪些数据包
+     * Part 2主要是在远端接收窗口大小(rmt_wnd)为0时，发送窗口探测包给远端
+     * Part 3 ~ Part 6就是发包的主体控制部分了，包括超时重传、何时重传等等
+     * Part 7则是更新一些网络统计数据，用于流控的，不在此文中展开
      * ikcp_flush
      */
     private void flush() {
@@ -898,6 +1181,8 @@ public class Kcp {
         ByteBuf buffer = null;
 
         // flush acknowledges
+        // Part 1 将前面收到数据时，压进ack发送队列的ack发送出去
+        // ack 不用考虑远程窗口大小
         int count = ackcount;
         for (int i = 0; i < count; i++) {
             buffer = tryCreateOrOutput(buffer, IKCP_OVERHEAD);
@@ -911,7 +1196,14 @@ public class Kcp {
 
         ackcount = 0;
 
+
         // probe window size (if remote window size equals zero)
+        // 零窗口探测
+        // Part 2 在远端窗口大小为0时，探测远端窗口大小
+        // 当远端的接收窗口大小为0时，本机将不会再向远端发送数据，此时也就
+        // 不会有远端的回传数据从而导致无法更新远端窗口大小。 因此需要单独
+        // 的一类远端窗口大小探测包，在远端接收窗口大小为0时，隔一段时间询
+        // 问一次，从而让本地有机会再开始重新传数据。
         if (rmtWnd == 0) {
             if (probeWait == 0) {
                 probeWait = IKCP_PROBE_INIT;
@@ -956,13 +1248,17 @@ public class Kcp {
 
         probe = 0;
 
+        // Part 3 计算窗口大小，以决定接下来是否继续发送数据
         // calculate window size
         int cwnd0 = Math.min(sndWnd, rmtWnd);
         if (!nocwnd) {
+            // 取拥塞窗口和发送窗口最小值
             cwnd0 = Math.min(this.cwnd, cwnd0);
         }
 
+        // Part 4 转移snd_queue中的数据到snd_buf中，以便后面发送出去
         // move data from snd_queue to snd_buf
+        // 确保发送的数据不会让接收方的接收队列溢出
         while (itimediff(sndNxt, sndUna + cwnd0) < 0) {
             Segment newSeg = sndQueue.poll();
             if (newSeg == null) {
@@ -983,24 +1279,30 @@ public class Kcp {
             newSeg.xmit = 0;
         }
 
+        // Part 5 计算重传时间
         // calculate resent
         int resent = fastresend > 0 ? fastresend : Integer.MAX_VALUE;
+        // 超时发送 最小等待时间
         int rtomin = nodelay ? 0 : (rxRto >> 3);
 
+        // Part 6 根据各个segment的发送情况发送segment
         // flush data segments
         int change = 0;
         boolean lost = false;
         for (Iterator<Segment> itr = sndBufItr.rewind(); itr.hasNext(); ) {
             Segment segment = itr.next();
             boolean needsend = false;
+            // 第一次发送
             if (segment.xmit == 0) {
                 needsend = true;
                 incrXmit(segment);
                 segment.rto = rxRto;
+                // 数据包超时发送时间
                 segment.resendts = current + segment.rto + rtomin;
                 if (log.isDebugEnabled()) {
                     log.debug("{} flush data: sn={}, resendts={}", this, segment.sn, (segment.resendts - current));
                 }
+                // 超时发送
             } else if (itimediff(current, segment.resendts) >= 0) {
                 needsend = true;
                 incrXmit(segment);
@@ -1027,7 +1329,7 @@ public class Kcp {
                     if (log.isDebugEnabled()) {
                         log.debug("{} fastresend. sn={}, xmit={}, resendts={} ", this, segment.sn, segment.xmit,
                                 (segment
-                                        .resendts - current));
+                                .resendts - current));
                     }
                 }
             }
@@ -1066,6 +1368,7 @@ public class Kcp {
 
         seg.recycle(true);
 
+        // Part 7
         // update ssthresh
         if (change > 0) {
             int inflight = (int) (sndNxt - sndUna);
@@ -1096,6 +1399,8 @@ public class Kcp {
      * update getState (call it repeatedly, every 10ms-100ms), or you can ask
      * ikcp_check when to call it again (without ikcp_input/_send calling).
      * 'current' - current timestamp in millisec.
+     *
+     * KCP会不停的进行update更新最新情况，数据的实际发送在update时进行
      *
      * @param current
      */
@@ -1175,7 +1480,7 @@ public class Kcp {
             }
         }
 
-        int minimal = tmPacket < tmFlush ? tmPacket : tmFlush;
+        int minimal = Math.min(tmPacket, tmFlush);
         if (minimal >= interval) {
             minimal = interval;
         }
@@ -1260,6 +1565,11 @@ public class Kcp {
         return 0;
     }
 
+    /**
+     * KCP默认为32，即可以接收最大为32*MTU=43.75kB。KCP采用update的方式，
+     * 更新间隔为10ms，那么KCP限定了你最大传输速率为4375kB/s，在高网速传输
+     * 大内容的情况下需要调用ikcp_wndsize调整接收与发送窗口
+     */
     public int wndsize(int sndWnd, int rcvWnd) {
         if (sndWnd > 0) {
             this.sndWnd = sndWnd;

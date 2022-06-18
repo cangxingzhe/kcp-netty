@@ -15,6 +15,9 @@ public class Consts {
     public static final int FIXED_RECV_BYTEBUF_ALLOCATE_SIZE = SystemPropertyUtil.getInt("io.jpower.kcp" +
             ".udpRecvAllocateSize", 2048);
 
+    /**
+     * 关闭链接后等待时间
+     */
     public static final int CLOSE_WAIT_TIME = 5 * 1000;
 
 }

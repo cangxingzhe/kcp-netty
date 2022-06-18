@@ -19,7 +19,7 @@ import io.netty.channel.nio.NioEventLoopGroup;
 public final class EchoServer {
 
     static final int CONV = Integer.parseInt(System.getProperty("conv", "10"));
-    static final int PORT = Integer.parseInt(System.getProperty("port", "8007"));
+    static final int PORT = Integer.parseInt(System.getProperty("port", "9007"));
 
     public static void main(String[] args) throws Exception {
         // Configure the server.

@@ -66,15 +66,15 @@ public class Ukcp {
     }
 
     public void input(ByteBuf data) throws IOException {
-        int ret = kcp.input(data);
+        var ret = kcp.input(data);
         switch (ret) {
-            case -1:
+            case NO_ENOUGH_HEAD:
                 throw new IOException("No enough bytes of head");
-            case -2:
+            case NO_ENOUGH_DATA:
                 throw new IOException("No enough bytes of data");
-            case -3:
+            case MISMATCH_CMD:
                 throw new IOException("Mismatch cmd");
-            case -4:
+            case INCONSISTENCY_CONV:
                 throw new IOException("Conv inconsistency");
             default:
                 break;
