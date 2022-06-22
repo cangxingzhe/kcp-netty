@@ -18,14 +18,25 @@ public class Ukcp {
 
     private static final InternalLogger log = InternalLoggerFactory.getInstance(Ukcp.class);
 
+    /**
+     * kcp算法的实现类
+     */
     private Kcp kcp;
-
+    /**
+     * 是否快速刷新
+     */
     private boolean fastFlush = true;
-
+    /**
+     * 是否将完整分片数据合并
+     */
     private boolean mergeSegmentBuf = true;
-
+    /**
+     * 下次更新时间
+     */
     private int tsUpdate;
-
+    /**
+     * channel是否存活
+     */
     private volatile boolean active;
 
     /**

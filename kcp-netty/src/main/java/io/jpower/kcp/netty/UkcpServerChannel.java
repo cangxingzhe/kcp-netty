@@ -52,7 +52,7 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
     private final DefaultUkcpServerChannelConfig config;
 
     /**
-     * 客户端链接
+     * 客户端链接映射
      */
     private final ReItrHashMap<SocketAddress, UkcpServerChildChannel> childChannelMap = new ReItrHashMap<>();
 
@@ -69,12 +69,19 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
 
     private final KcpOutput output = new UkcpServerOutput();
 
+    /**
+     * 最近发送数据时间
+     */
     private int tsUpdate;
-
+    /**
+     * 是否设置下次定时
+     */
     private boolean scheduleUpdate;
 
     private boolean scheduleCloseWait = false;
-
+    /**
+     * 有待发送数据的Channel
+     */
     private List<UkcpServerChildChannel> writeChannels = new ArrayList<>();
 
     private List<Object> closeChildList = new ArrayList<>();
@@ -475,6 +482,7 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
                     nextChildTsUp = tsUp;
                     nextChildSchedule = true;
                 }
+                //获取最小的刷新时间
                 if (nextChildSchedule && (!nextSchedule || Utils.itimediff(nextTsUpdate, nextChildTsUp) > 0)) {
                     nextTsUpdate = nextChildTsUp;
                     nextSchedule = true;
@@ -549,6 +557,7 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
             try {
                 try {
                     do {
+                        //从UDP中读取数据到readBuf
                         int localRead = doReadMessages(readBuf);
                         if (localRead == 0) {
                             break;
@@ -571,8 +580,10 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
                     InetSocketAddress remoteAddress = packet.remoteAddress();
                     ByteBuf byteBuf = packet.content();
 
+                    //检查当前socket是否在等待关闭 待关闭socket可以接收数据，但不做任何处理
                     CloseWaitKcp closeWaitKcp = closeWaitKcpMap.get(remoteAddress);
                     if (closeWaitKcp != null) {
+                        //是的话，照样接收数据，然后直接释放数据，不传递到上层
                         CodecOutputList<ByteBuf> recvBufList = null;
                         Ukcp ukcp = closeWaitKcp.ukcp;
                         try {
@@ -740,6 +751,7 @@ public final class UkcpServerChannel extends AbstractNioMessageChannel implement
             for (Iterator<Map.Entry<SocketAddress, CloseWaitKcp>> itr = closeWaitKcpMapItr.rewind(); itr.hasNext(); ) {
                 CloseWaitKcp w = itr.next().getValue();
                 Ukcp ukcp = w.ukcp;
+                // 不马上回收，等待超时或者kcp中没有要发送数据
                 if (Utils.itimediff(current, w.closeTime) >= 0) {
                     ukcp.setKcpClosed();
                     itr.remove();

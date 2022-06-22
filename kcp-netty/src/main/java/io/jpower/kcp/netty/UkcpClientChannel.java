@@ -35,18 +35,34 @@ public final class UkcpClientChannel extends AbstractChannel implements UkcpChan
 
     private final DefaultUkcpClientChannelConfig config;
 
+    /**
+     * 底层封装UDP
+     */
     private final UkcpClientUdpChannel udpChannel;
 
+    /**
+     * KCP算法的实现类
+     */
     private final Ukcp ukcp;
 
+    /**
+     * Ukcp通过output将数据包流向UkcpClientUdpChannel
+     */
     private final KcpOutput output = new UkcpClientOutput();
 
+    /**
+     * 下次刷新Ukcp中数据的时间
+     */
     private int tsUpdate;
 
     private boolean scheduleUpdate;
-
+    /**
+     * 是否刷新数据
+     */
     private boolean flushPending;
-
+    /**
+     * Channel是否已经关闭
+     */
     boolean closeAnother = false;
 
     public UkcpClientChannel() {
@@ -156,23 +172,28 @@ public final class UkcpClientChannel extends AbstractChannel implements UkcpChan
 
     @Override
     protected void doWrite(ChannelOutboundBuffer in) throws Exception {
+        //是否发送到kcp中
         boolean sent = false;
         for (; ; ) {
             Object msg = in.current();
+            // 没有数据
             if (msg == null) {
                 flushPending = false;
                 break;
             }
             try {
                 boolean done = false;
+                //将数据发送到kcp中
                 if (kcpSend((ByteBuf) msg)) {
                     done = true;
                     sent = true;
                 }
 
+                //发送数据成功
                 if (done) {
                     in.remove();
                 } else {
+                    // 发送失败，又后面定时任务强制刷新
                     flushPending = true;
                     break;
                 }
@@ -182,10 +203,14 @@ public final class UkcpClientChannel extends AbstractChannel implements UkcpChan
         }
 
         if (sent) {
+            //在成功发送到kcp中后
             // update kcp
+            //是否配置了快速刷新
             if (ukcp.isFastFlush()) {
+                //将缓存在kcp中数据发送到对端
                 updateKcp();
             } else {
+                //更新下次定时刷新kcp中数据的时间
                 kcpTsUpdate(Utils.milliSeconds());
             }
         }
@@ -299,8 +324,10 @@ public final class UkcpClientChannel extends AbstractChannel implements UkcpChan
 
         int nextTsUpdate = 0;
         boolean nextSchedule = false;
+        // update时间
         int tsUp = kcpTsUpdate();
         Throwable exception = null;
+        //判断更新是否延迟
         if (Utils.itimediff(current, tsUp) >= 0) {
             try {
                 nextTsUpdate = kcpUpdate(current);

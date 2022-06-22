@@ -182,7 +182,9 @@ public class Kcp {
      * 刷新间隔
      */
     private int interval = IKCP_INTERVAL;
-
+    /**
+     * 刷新时间
+     */
     private int tsFlush = IKCP_INTERVAL;
 
     private int xmit;
@@ -1407,6 +1409,7 @@ public class Kcp {
     public void update(int current) {
         this.current = current;
 
+        //第一次update
         if (!updated) {
             updated = true;
             tsFlush = this.current;
@@ -1414,7 +1417,9 @@ public class Kcp {
 
         int slap = itimediff(this.current, tsFlush);
 
+        //误差超过10s？
         if (slap >= 10000 || slap < -10000) {
+            //将ts设置为current
             tsFlush = this.current;
             slap = 0;
         }
@@ -1427,12 +1432,17 @@ public class Kcp {
             flush();
         }*/
 
+        //当current大于等于tsFlush
         if (slap >= 0) {
+            //尝试将tsFlush增加interval
             tsFlush += interval;
+            //再次对比，如果current还是大于tsFlush，说明tsFlush延迟过大
             if (itimediff(this.current, tsFlush) >= 0) {
                 tsFlush = this.current + interval;
             }
         } else {
+            // slag < 0，说明tsFlush不合理，调用update有两种请求
+            // 1.在上层要发送数据时，设置current小于tsFlush，说明要tsFlush
             tsFlush = this.current + interval;
         }
         flush();
@@ -1451,6 +1461,7 @@ public class Kcp {
      * @return
      */
     public int check(int current) {
+        //第一次刷新
         if (!updated) {
             return current;
         }
